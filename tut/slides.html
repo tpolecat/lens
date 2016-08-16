@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Title</title>
+    <meta charset="utf-8">
+    <style>
+      @import url(https://fonts.googleapis.com/css?family=Yanone+Kaffeesatz);
+      @import url(https://fonts.googleapis.com/css?family=Droid+Serif:400,700,400italic);
+      @import url(https://fonts.googleapis.com/css?family=Ubuntu+Mono:400,700,400italic);
+
+      body { font-family: 'Droid Serif', 'Helvetica'; }
+      h1, h2, h3 {
+        font-family: 'Yanone Kaffeesatz', 'Gill Sans';
+        font-weight: normal;
+      }
+      .remark-code, .remark-inline-code { font-family: 'Ubuntu Mono', 'Consolas', 'Courier New'; }
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+class: center, middle
+
+# PDXScala
+16-Aug 2016 • Welcome!
+
+---
+
+# Agenda
+- Pizza
+- Announcements
+- Short Beginner Talk
+- Main Event
+
+???
+
+- Welcome
+  - Big Crowd
+  - Welcome our guests from 47 Degrees
+  - As always, big thanks to Dexcom
+- Announcements
+  - Upcoming Conferences
+    - Scala World  - Sep 12-13 Penrith UK
+    - Strange Loop - Sep 15-17 St. Louis
+    - Scala by the Bay - Nov 11-13 San Francisco
+  - Anybody hiring, you can write on the whiteboard
+  - We're always looking for speakers and ideas for talks.
+
+---
+
+class: center, middle
+
+# 15 Minutes of Lens
+Rob Norris • `@tpolecat` • Gemini Observatory
+
+???
+
+- Ok so I'm going to talk about lenses **just a little bit**.
+- They're a really cool abstraction for querying and updating immutable data structures, which is something that seems really awkward if you're first learning how to work with immutable data.
+
+---
+
+# Goals
+- Understand why `Lens` is a useful abstraction.
+- Understand a simple implementation.
+- Understand lens composition.
+
+# Non-Goals
+- Understand `State` monad examples.
+- Understand "modern" lenses.
+
+---
+
+# Immutable Data
+
+A data type with nested structure.
+
+```tut:silent
+case class Person(first: String, last: String)
+case class Band(name: String, lead: Person)
+case class Album(name: String, band: Band)
+
+val a = 
+  Album("Dark Side of the Spoon", 
+    Band("Green Floyd", 
+      Person("Steve",  "Gilmour")
+    )
+  )
+```
+
+???
+
+- ok so we have an instance with some typos that we want to fix. So how do we do that?
+
+---
+
+# Updating with `copy`
+
+Scala provides `copy` but it is awkward the deeper you go.
+
+```tut
+a
+val b = a.copy(name = "Dark Side of the Moon")
+val c = b.copy(band = b.band.copy(name = "Pink Floyd"))
+val d = c.copy(band = c.band.copy(lead = c.band.lead.copy(first = "David")))
+```
+
+???
+
+- so you can see that this is irritating
+
+---
+
+# Our First Lens
+
+Observation: querying and setting are a pair of functions.
+
+```tut:silent
+case class Lens[A,B](set: (A, B) => A, get: A => B)
+```
+
+Create one.
+
+```tut:silent
+val albumName = Lens[Album, String]((a, b) => a.copy(name = b), _.name)
+```
+
+Try it!
+
+```tut
+albumName.get(a)
+albumName.set(a, "Dark Side of the Moon")
+```
+
+???
+
+- Ok this works but so what? It's more typing than just using `copy`.
+
+
+---
+
+# Our Second Lens
+
+Observation: If we have a `Lens[A,B]` and a `Lens[B,C]` we can make a `Lens[A,C]`.
+
+```tut:silent
+  case class Lens[A,B](set: (A, B) => A, get: A => B) { outer =>
+
+    def andThen[C](lens: Lens[B, C]): Lens[A, C] = {
+
+      val set: (A, C) => A = { (a, c) => 
+        val b1 = outer.get(a)    // get the b
+        val b2 = lens.set(b1, c) // new b with updated c
+        outer.set(a, b2)         // new a with updated b
+      }
+
+      val get: A => C = { a =>
+        lens.get(outer.get(a))   // get is easier
+      }
+
+      Lens(set, get)
+
+    }
+
+  }
+```
+
+???
+
+- ... so that means ...
+- So if you didn't follow that I'm confident that you can follow it if you sit down with it later. There aren't that many ways to write it that compile.
+- Ok so we can clean that up by inlining the implementations and it looks like this.
+
+---
+
+# Our Second Lens
+
+Observation: If we have a `Lens[A,B]` and a `Lens[B,C]` we can make a `Lens[A,C]`.
+
+```tut:silent
+  case class Lens[A,B](set: (A, B) => A, get: A => B) {
+    def andThen[C](lens: Lens[B, C]): Lens[A, C] =
+      Lens((a, c) => set(a, lens.set(get(a), c)), a => lens.get(get(a)))
+  }
+```
+
+Two lenses now.
+
+```tut:silent
+val albumBand = Lens[Album, Band  ]((a, b) => a.copy(band = b), _.band)
+val bandName  = Lens[Band,  String]((a, b) => a.copy(name = b), _.name)
+```
+
+Compose them!
+
+```tut
+val composed = albumBand andThen bandName
+composed.get(a)
+composed.set(a, "Dread Zeppelin")
+```
+
+???
+
+- AAH! Ok now we're getting somewhere. We have a way of peeking down deep into a structure now.
+- Let's do more.
+
+---
+
+# Our Second Lens
+
+Two more lenses.
+
+```tut:silent
+val bandLead    = Lens[Band,   Person]((a, b) => a.copy(lead  = b), _.lead)
+val personFirst = Lens[Person, String]((a, b) => a.copy(first = b), _.first)
+```
+
+Compose more!
+
+```tut
+val wayDown = albumBand andThen bandLead andThen personFirst
+wayDown.get(a)
+wayDown.set(a, "Jimmy")
+```
+
+???
+
+- Ok, so that's cool. Let's make it look a little nicer.
+
+
+---
+
+# Our Third Lens
+
+Rename `andThen` and make an infix alias for `Lens`, and add `modify`.
+
+```tut:silent
+case class Lens[A,B](set: (A, B) => A, get: A => B) {
+
+  def >=>[C](lens: Lens[B, C]): Lens[A, C] =
+    Lens((a, c) => set(a, lens.set(get(a), c)), a => lens.get(get(a)))
+
+  def modify(a: A, f: B => B): A =
+    set(a, f(get(a)))
+
+}
+
+type @>[A, B] = Lens[A, B]
+```
+
+---
+
+# Our Third Lens
+
+Define lenses on our companions objects.
+
+```scala
+case class Person(first: String, last: String)
+object Person {
+  val first: Person @> String = Lens((a, b) => a.copy(first = b), _.first)
+  val last:  Person @> String = Lens((a, b) => a.copy(last  = b), _.last )
+}
+
+case class Band(name: String, lead: Person)
+object Band {
+  val name: Band @> String = Lens((a, b) => a.copy(name = b), _.name)
+  val lead: Band @> Person = Lens((a, b) => a.copy(lead = b), _.lead)
+}
+
+case class Album(name: String, band: Band)
+object Album {
+  val name: Album @> String = Lens((a, b) => a.copy(name = b), _.name)
+  val band: Album @> Band   = Lens((a, b) => a.copy(band = b), _.band)
+}
+```
+```tut:invisible
+// because of the repl
+case class Person(first: String, last: String); object Person {
+  val first: Person @> String = Lens((a, b) => a.copy(first = b), _.first)
+  val last:  Person @> String = Lens((a, b) => a.copy(last  = b), _.last )
+}
+
+case class Band(name: String, lead: Person); object Band {
+  val name: Band @> String = Lens((a, b) => a.copy(name = b), _.name)
+  val lead: Band @> Person = Lens((a, b) => a.copy(lead = b), _.lead)
+}
+
+case class Album(name: String, band: Band); object Album {
+  val name: Album @> String = Lens((a, b) => a.copy(name = b), _.name)
+  val band: Album @> Band   = Lens((a, b) => a.copy(band = b), _.band)
+}
+```
+---
+
+# Our Third Lens
+
+So now it's a little nicer to read.
+
+```tut 
+val a = Album("Lemon", Band("Pink Lloyd", Person("Steve",  "Gilmour"))) 
+(Album.band >=> Band.name).set(a, "Pink Floyd")
+(Album.band >=> Band.lead >=> Person.first).set(a, "David")
+```
+
+Let's try out `modify`.
+```tut
+(Album.band >=> Band.name).modify(a, _.toUpperCase)
+```
+
+---
+
+# Our Fourth Lens
+
+Observation: we can compose side-by-side, not just end-to-end.
+
+```tut:silent
+case class Lens[A,B](set: (A, B) => A, get: A => B) {
+
+  def >=>[C](lens: Lens[B, C]): Lens[A, C] =
+    Lens((a, c) => set(a, lens.set(get(a), c)), a => lens.get(get(a)))
+
+  def modify(a: A, f: B => B): A =
+    set(a, f(get(a)))
+
+  def zip[C](lens: Lens[A, C]): Lens[A, (B, C)] =
+    Lens((a, bc) => lens.set(set(a, bc._1), bc._2), a => (get(a), lens.get(a)))
+
+}
+
+type @>[A, B] = Lens[A, B]
+```
+```tut:invisible
+// because of the repl
+case class Person(first: String, last: String); object Person {
+  val first: Person @> String = Lens((a, b) => a.copy(first = b), _.first)
+  val last:  Person @> String = Lens((a, b) => a.copy(last  = b), _.last )
+}
+
+case class Band(name: String, lead: Person); object Band {
+  val name: Band @> String = Lens((a, b) => a.copy(name = b), _.name)
+  val lead: Band @> Person = Lens((a, b) => a.copy(lead = b), _.lead)
+}
+
+case class Album(name: String, band: Band); object Album {
+  val name: Album @> String = Lens((a, b) => a.copy(name = b), _.name)
+  val band: Album @> Band   = Lens((a, b) => a.copy(band = b), _.band)
+}
+val a = Album("Lemon", Band("Pink Lloyd", Person("Steve",  "Gilmour"))) 
+```
+
+---
+
+# Our Fourth Lens
+
+Try it!
+
+```tut:silent
+val bothNames = Person.first zip Person.last // Person @> (String, String)
+val albumLeadPerson = Album.band >=> Band.lead >=> bothNames
+```
+
+Does it work?
+
+```tut
+albumLeadPerson.set(a, ("Bob", "Dole"))
+```
+
+---
+
+# Some Generic Lenses
+
+```tut:silent
+// identity
+def id[A]: A @> A = Lens((a, b) => b, a => a)
+
+// projection
+def fst[A,B]: (A, B) @> A = Lens((a, b) => (b, a._2), _._1)
+def snd[A,B]: (A, B) @> B = Lens((a, b) => (a._1, b), _._2)
+
+// a lens for set elements (!)
+def includes[A](a: A): Set[A] @> Boolean =
+  Lens((s, b) => if (b) s + a else s - a, _.contains(a))
+```
+
+Try it!
+
+```tut
+val nums = Set(1,2,3)
+includes(4).get(nums)
+includes(4).set(nums, true)
+includes(2).set(nums, false)
+```
+
+???
+
+- So rather than adding and removing from a set, we use a lens to set membership to true or false
+
+---
+
+# Down the Rabbit Hole
+
+The `State` monad.
+
+```tut:silent
+case class State[S, A](run: S => (S, A)) {
+
+  def map[B](f: A => B): State[S, B] =
+    State { s =>
+      val (s0, a) = run(s)
+      (s0, f(a))
+    }
+
+  def flatMap[B](f: A => State[S,B]): State[S, B] =
+    State { s =>
+      val (s0, a) = run(s)
+      f(a).run(s0)
+    }
+
+  def exec(s: S): S =
+    run(s)._1
+
+}
+```
+
+???
+
+- I don't expect you to understand this if you haven't seen it before. It's ok to get lost here; I'm just trying to wow you a little bit.
+- The idea is that we can represent a stateful computation as one that takes some starting state, uses it to compute a value *and* a new state, returning both.
+- Functions of this form compose; you can define map and flatMap for them and use them in a for-comprehension.
+
+---
+
+# Our Fifth Lens
+
+Observation: `Lens` operations can become `State` operations.
+
+```tut:silent
+case class Lens[A,B](set: (A, B) => A, get: A => B) { outer =>
+
+  def >=>[C](lens: Lens[B, C]): Lens[A, C] =
+    Lens((a, c) => outer.set(a, lens.set(outer.get(a), c)), a => lens.get(outer.get(a)))
+
+  def modify(a: A, f: B => B): A =
+    set(a, f(get(a)))
+
+  def zip[C](lens: Lens[A, C]): Lens[A, (B, C)] =
+    Lens((a, bc) => lens.set(set(a, bc._1), bc._2), a => (get(a), lens.get(a)))
+
+  def :=(b: B): State[A, Unit] =
+    State(a => (set(a, b), ()))
+
+  def ask: State[A, B] =
+    State(a => (a, get(a)))
+
+}
+
+type @>[A, B] = Lens[A, B]
+```
+```tut:invisible
+// because of the repl
+case class Person(first: String, last: String); object Person {
+  val first: Person @> String = Lens((a, b) => a.copy(first = b), _.first)
+  val last:  Person @> String = Lens((a, b) => a.copy(last  = b), _.last )
+}
+
+case class Band(name: String, lead: Person); object Band {
+  val name: Band @> String = Lens((a, b) => a.copy(name = b), _.name)
+  val lead: Band @> Person = Lens((a, b) => a.copy(lead = b), _.lead)
+}
+
+case class Album(name: String, band: Band); object Album {
+  val name: Album @> String = Lens((a, b) => a.copy(name = b), _.name)
+  val band: Album @> Band   = Lens((a, b) => a.copy(band = b), _.band)
+}
+val a = Album("Lemon", Band("Pink Lloyd", Person("Steve",  "Gilmour"))) 
+```
+
+---
+
+# Our Fifth Lens
+
+Observation: `Lens` operations can become `State` operations.
+
+```tut:silent
+val albumName = Album.name
+val bandName  = Album.band >=> Band.name
+val leadFirst = Album.band >=> Band.lead >=> Person.first
+
+def update =
+  for {
+    _ <- albumName := "Dark Side of the Moon"
+    _ <- bandName  := "Pink Floyd"
+    n <- leadFirst.ask
+    _ <- leadFirst := "*" * n.length
+  } yield ()
+```
+
+Umm, ok?
+
+```tut
+update.exec(a)
+```
+
+???
+
+- So now what we have is an imperative program that's totally functional. You write it as if you were mutating something but instead it's a pure operation. Which is cool.
+
+---
+
+# Further Learning
+
+- *Lens, a Functional Imperative* - Ed Kmett, YouTube
+- Monocle (modern Scala lenses without boilerplate)
+
+---
+
+class: center, middle
+
+# Thanks!
+Code and slides at `tpolecat/lens` on GitHub
+
+## Questions?
+
+
+
+ </textarea>
+    <script src="remark-latest.min.js">
+    </script>
+    <script>
+      var slideshow = remark.create();
+    </script>
+  </body>
+</html>
